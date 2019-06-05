@@ -1,0 +1,286 @@
+////
+NO CAMBIAR!!
+Codificación, idioma, tabla de contenidos, tipo de documento
+////
+:encoding: utf-8
+:lang: es
+:doctype: book
+
+////
+Nombre y título del trabajo
+////
+# Kafka
+Cloud-DI Team - Departamento de Informática. UAL
+
+image::images/di.png[]
+
+// NO CAMBIAR!! (Entrar en modo no numerado de apartados)
+:numbered!: 
+
+.MUY IMPORTANTE
+****
+Este documento está inacabado y sin corregir. Por ahora sólo son unas notas. En un futuro estará disponible como tutorial.
+****
+
+## Usos
+
+* Kafka es un sistema de mensajería rápido, escalable, durable, tolerante a fallos con funcionamiento publicacion-suscripción
+* Procesamiento de streaming en tiempo real para analíticas en tiempo real
+    - Seguimiento de llamadas, sensores IoT, Seguimiento de actividad web, Recolección de métricas, Agregación de logs, Agregación de estadísticas
+* Uso combinado con Flume, Spark Streaming, Storm, HBase y Spark
+* 
+
+## Conceptos
+
+* Topic: Un stream de datos. Similar a una tabla en una base de datos pero sin todas las restricciones (p.e. /orders, /user-signups)
+* Partición. Los topics se dividen en particiones que comienzan desde 0 en adelante.
+    - Las particiones están ordenadas (Partition 0, Partition 1, ...)
+    - Cada mensaje en una partición obtiene un id incremental, denominado _offset_. (0, 1, 2, ...)
+    - El orden sólo se garantiza en una partición, no a través de particiones.
+* Los datos sólo están en Kafka por un tiempo (de forma predeterminada 1 semana)
+* Una vez que un dato se escribe en una partición no puede ser cambiado (inmutabilidad)
+* Los datos se asignan a un partición de forma aleatoria a no ser que se les proporcione una clave
+* Brokers: Un cluster Kafka está compuesto de brokers (servidores, de 3 hasta 100). 
+    - Cada Broker está identificado con un ID (entero)
+    - Las particiones se distribuyen entre los brokers (es distribuido)
+* Factor de replicación de un topic: Cantidad de copias (2 ó 3) deseadas de los datos para soportar caídas de brokers
+    - Líder de una partición: En cada momento, sólo puede haber un broker líder para recibir y servir datos de una partición. El resto de brokers se sincronizan con él. (Cada partición tiene un líder y múltiples ISR - in sync replicas). Los líderes pueden variar ante caídas de un broker. Al restablecerse el broker, vuelve a ser el líder.
+    - Con un factor de replicacion de N, se puede tolerar la caída de hasta N-1 brokers
+* Hay una API Producer y una Consumer para producir y consumir, respectivamente, streams de mensajes.
+Ejemplo:
+Una flota de camiones en la que cada camión envía a Kafka su posición GPS (lat, lon) cada 20 segundos junto con su ID de camión 
+Creamos el topic truck_gps con por ejemplo 10 particiones
+
+[NOTE]
+====
+Para más información sobre el uso de particiones en topics consultar este enlace https://www.confluent.io/blog/how-choose-number-topics-partitions-kafka-cluster[How to choose the number of topics/partitions in a Kafka cluster?]
+
+====
+## Producer
+
+* Escribe datos en los topics (que están formados por particiones). La carga de escrituras está balanceada entre el número de particiones.
+* Pueden recibir acknoledgements
+    - acks=0. No se espera confirmación (posible pérdida de datos)
+    - acks=1. Valor predeterminado. Se espera a que confirme el lider (pérdida de datos limitada)
+    - acks=all Confirma el líder y las réplicas (no hay pérdida de datos)
+* Pueden enviar una clave con el mensaje. 
+    - Con key=null se escribe en round robin
+    - Si se envía la clave (p.e. el id del camión), todos los mensajes que tengan esa clave van a la misma partición, *con lo que se garantiza el almacenamiento en orden*
+    - Se pasa una función hash a la clave para decidir a qué partición va cada clave.
+    - Mientras no cambie la cantidad de particiones de un topic, la misma clave siempre irá a la misma partición.x
+    
+## Consumer
+
+* Lee datos de un topic (identificado por su nombre)
+* Los datos son leídos en orden
+* Grupos de consumers: Leen de las particiones de forma exclusiva. Si hay más consumers que partitions, algunos consumers quedarán inactivos porque un mismo topic no puede ser leído por dos consumers de un mismo group. Como mucho se pueden tener tantos consumers en un group como partitions.
+* Consumer offsets: Kafka guarda el último offset marcado de cada consumer. Así, ante una caída del consumer, podrá reanudar la lectura cuando se recupere. Existen estas políticas de consumer offsets:
+    - At most once: Se escriben los offsets nada más recibir el mensaje. Si falla el procesamiento se perderá el mensaje (no se puede volver a leer)
+    - At least once: Se escriben los offsets después de procesar el mensaje. Se puede volver a leer el mensaje, pero hay que tener cuidado en el procesasdo de mensajes para que no se procesen por duplicado (idempotencia)
+    - Exactly once: De Kafka a Kafka usando la Kafka Streams API
+    
+## Zookeeper
+
+* Gestiona los brokers manteniendo una lista
+* Participa en la elección del lider de una partición
+* Envía notificaciones a Kafka ante cambios (nuevos topics, caídas o recuperaciones de brokers, eliminación de tocis, ...)
+* Kafka no puede trabajar sin Zookeeper
+* Un cluster Zookeeper fuciona con un número impar de servidores (3, 5, 7)
+* Tiene un líder (para escrituras) y el resto son seguidores (para lecturas)
+* Kafka guarda los metadatos en Zookeper
+
+[TIP]
+====
+.Conservación de los logs de Kafka y datos de Zookeper
+en config/server.properties y config/zookeeper.properties se encuentran, respectivamente, los archivos de configuración de Kafka y Zookeeper. De forma predeterminada logs de Kafka y datos de Zookeper se guardan el directotio `/tmp` por lo que los datos se pierden al reiniciar. Es conveniente cambiar estos directorios y modificar el `PATH` en el `.bash_profile` y `.profile`.
+====
+
+## Operaciones sobre topics
+
+### Crear un topic
+
+[source, bash]
+----
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --topic first_topic --create --partitions 3 --replication-factor 1 <1>
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic first_topic.
+----
+<1> Al tener un solo broker, el factor de replicación no puede ser superior a 1.
+
+### Mostrar los topics existentes
+
+[source, bash]
+----
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --list
+first_topic
+----
+
+### Obtener información de un topic
+
+[source, bash]
+----
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --topic first_topic --describe
+Topic:first_topic	PartitionCount:3	ReplicationFactor:1	Configs:
+	Topic: first_topic	Partition: 0	Leader: 0	Replicas: 0	Isr: 0 <1>
+	Topic: first_topic	Partition: 1	Leader: 0	Replicas: 0	Isr: 0
+	Topic: first_topic	Partition: 2	Leader: 0	Replicas: 0	Isr: 0
+----
+<1> Los valores de 0 en Leader, Replicas e Isr hacen referencia al id del broker, 0.
+
+### Eliminación de topics
+
+[soruce, bash]
+----
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --topic second_topic --create --partitions 6 --replication-factor 1
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic second_topic.
+
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --list
+first_topic
+second_topic
+
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --topic second_topic --delete <1>
+Topic second_topic is marked for deletion.
+Note: This will have no impact if delete.topic.enable is not set to true.
+
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --list
+first_topic
+----
+<1> Eliminación del topic
+
+## CLI Producer
+
+Creando mensajes sobre `first_topic`
+
+[source, bash]
+----
+$ bin/kafka-console-producer.sh --broker-list 127.0.0.1:9092 --topic first_topic
+>Hola a todos
+>Estoy en Kafka
+>Deseando hacer cosas
+----
+
+Si se inicia el Producer sobre un topic inexistente se producirá un WARNING al crear el primer mensaje. En ese momento Kafka creará el topic e insertará el mensaje. El segundo mensaje se añadirá con normalidad.
+
+[source, bash]
+----
+$ bin/kafka-console-producer.sh --broker-list 127.0.0.1:9092 --topic new_topic <1>
+>Mensaje sobre topic no creado <2>
+[2019-06-05 22:35:40,692] WARN [Producer clientId=console-producer] Error while fetching metadata with correlation id 3 : {new_topic=LEADER_NOT_AVAILABLE} (org.apache.kafka.clients.NetworkClient) <3>
+>Nuevo mensaje <4>
+----
+<1> Producer iniciado con un topic no creado anteriormente
+<2> Primer mensaje sobre el topic inexistente
+<3> WARNING indicando que el topic no existía. Concretamente, no estaba disponible el líder
+<4> Segundo mensaje introducido normalmente.
+
+Ahora podemos comprobar los topics y ver qué características tiene el topic creado.
+
+[source, bash]
+----
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --list 
+first_topic
+new_topic <1>
+
+$ bin/kafka-topics.sh --zookeeper 127.0.0.1:2181 --topic new_topic --describe
+Topic:new_topic	PartitionCount:1	ReplicationFactor:1	Configs: <2>
+	Topic: new_topic	Partition: 0	Leader: 0	Replicas: 0	Isr: 0
+----
+<1> El topic creado sobre la marcha aparece al listar los topics
+<2> Los parámetros predeterminados son de 1 topic y factor de replicación 1
+
+[NOTE]
+====
+Se puede modificar el valor de `num.partitions` en `config/server.proerties` para aumentar el número predeterminado de particiones por topic. Inicialmente está configurado a 1.
+====
+
+## CLI Consumer
+
+De forma predeterminada. el CLI Consumer sólo recibirá los mensajes que se produzcan desde que se inicie la sesión. Todo lo que tuviera el topic anteriomente no lo ve el CLI.
+
+Para poder verlo en acción, habría que usar dos ventanas diferentes, una con el producer y otra con el consumer.
+
+En primer lugar se iniciaría el Consumer CLI
+
+[source, bash]
+----
+$ bin/kafka-console-consumer.sh --bootstrap-server 127.0.0.1:9092 --topic first_topic
+----
+
+Después se inicia el producer CLI. A medida que se vayan escribiendo mensajes se irán recibiendo en el consumer CLI.
+
+[source, bash]
+----
+$ bin/kafka-console-producer.sh --broker-list 127.0.0.1:9092 --topic first_topic
+>Hola
+>Cómo estás?    
+>
+----
+
+Para poder todos los mensajes, se usará el parámetro `--from-beginning`.
+
+[source, bash]
+----
+o$ bin/kafka-console-consumer.sh --bootstrap-server 127.0.0.1:9092 --topic first_topic --from-beginning
+Hola a todos
+Hola
+Estoy en Kafka
+Cómo estás?
+Deseando hacer cosas
+----
+
+[CAUTION]
+====
+El orden de los mensajes no es total. El orden es por partición. Sólo se tiene orden total si hay una partición.
+====
+
+[NOTE]
+====
+Al usar `from-beginning` al leer los mensajes se habrá confirmado el offset y los mensajes se dan por leídos. Por tanto, si se vuelve a iniciar el consumer CLI para leer desde el principio, la lista de mensajes estará vacía.
+====
+### Uso de consumer groups
+
+Usando consumer groups sobre un mismo topic, los mensajes producidos se repartirán entre los consumers del grupo.
+
+Probar a abrir varios terminales con 
+
+[source, bash]
+----
+$ bin/kafka-console-consumer.sh --bootstrap-server 127.0.0.1:9092 --topic first_topic --group my-first-app
+----
+
+## Operaciones sobre consumer groups
+
+Podemos listar los consumer groups
+
+[source, bash]
+----
+$ bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --list
+my-first-app
+----
+
+Describir un consumer group es interesante porque se ven los offsets de cada uno
+
+[source, bash]
+----
+$ bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group my-first-app --describe
+
+TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID                                     HOST            CLIENT-ID
+first_topic     0          3               3               0               consumer-1-c197c36c-6c6c-441e-8761-de4343846a0e /192.168.1.5    consumer-1
+first_topic     1          2               2               0               consumer-1-c197c36c-6c6c-441e-8761-de4343846a0e /192.168.1.5    consumer-1
+first_topic     2          2               2               0               consumer-1-c197c36c-6c6c-441e-8761-de4343846a0e /192.168.1.5    consumer-1
+----
+
+Resetear offsets
+
+Es posible restablecer los offsets al principio, a una fecha determinada, al final, ... Y los reseteos se pueden hacer sobre un topic o sobre todos los topics.
+
+[source, bash]
+----
+$ bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group my-first-app --reset-offsets --to-earliest --execute --topic first_topic
+
+TOPIC                       PARTITION  NEW-OFFSET     
+first_topic                 0          0    
+----
+
+
